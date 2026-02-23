@@ -1,67 +1,10 @@
 import { useState, useRef, useCallback } from "react";
+import { RAW_W, RAW_H, buildCIR, buildNDVI, renderToCanvas, displaySize } from "../hooks/useImageHelpers";
+import useSubmitRaw from "../hooks/useSubmitRaw";
+import useProcessClusters from "../hooks/useProcessClusters";
 
-/* ── Constants ─────────────────────────────────────────── */
-const RAW_W = 2048, RAW_H = 1536, NUM_CLUSTERS = 6;
-
-// Celeste semitransparente para todos los clusters
+const NUM_CLUSTERS = 6;
 const CLUSTER_COLOR = [135, 206, 235, 120]; // sky blue, alpha ~47%
-
-/* ── Image helpers ─────────────────────────────────────── */
-// Normaliza al rango real de 0-255, con opción de ajustar brillo (para CIR)
-function norm(v, brightness = 1) {
-  return Math.min(255, Math.max(0, Math.round((v ?? 0) / 255 * brightness)));
-}
-
-function buildCIR(nir, red, green) {
-  let nirMn = Infinity, nirMx = -Infinity;
-  let redMn = Infinity, redMx = -Infinity;
-  let grnMn = Infinity, grnMx = -Infinity;
-  for (let y = 0; y < RAW_H; y++)
-    for (let x = 0; x < RAW_W; x++) {
-      const n = nir[y]?.[x], r = red[y]?.[x], g = green[y]?.[x];
-      if (n != null && isFinite(n)) { if (n < nirMn) nirMn = n; if (n > nirMx) nirMx = n; }
-      if (r != null && isFinite(r)) { if (r < redMn) redMn = r; if (r > redMx) redMx = r; }
-      if (g != null && isFinite(g)) { if (g < grnMn) grnMn = g; if (g > grnMx) grnMx = g; }
-    }
-  const id = new Uint8ClampedArray(RAW_W * RAW_H * 4);
-  for (let y = 0; y < RAW_H; y++)
-    for (let x = 0; x < RAW_W; x++) {
-      const i = (y * RAW_W + x) * 4;
-      id[i]   = norm(nir[y]?.[x]   ?? nirMn, nirMn, nirMx);
-      id[i+1] = norm(red[y]?.[x]   ?? redMn, redMn, redMx);
-      id[i+2] = norm(green[y]?.[x] ?? grnMn, grnMn, grnMx);
-      id[i+3] = 255;
-    }
-  return id;
-}
-
-function buildNDVI(ndvi) {
-  const id = new Uint8ClampedArray(RAW_W * RAW_H * 4);
-  for (let y = 0; y < RAW_H; y++)
-    for (let x = 0; x < RAW_W; x++) {
-      const i = (y * RAW_W + x) * 4;
-      const v = Math.min(255, Math.max(0, Math.round((((ndvi[y]?.[x] ?? -1) + 1) / 2) * 255)));
-      id[i]=v; id[i+1]=v; id[i+2]=v; id[i+3]=255;
-    }
-  return id;
-}
-
-function renderToCanvas(canvas, pixelData, dw, dh) {
-  canvas.width = dw; canvas.height = dh;
-  const tmp = document.createElement("canvas");
-  tmp.width = RAW_W; tmp.height = RAW_H;
-  tmp.getContext("2d").putImageData(new ImageData(pixelData, RAW_W, RAW_H), 0, 0);
-  canvas.getContext("2d").drawImage(tmp, 0, 0, dw, dh);
-}
-
-function displaySize() {
-  const availW = Math.min(window.innerWidth - 220, 1400);
-  const availH = window.innerHeight - 120;
-  let dw = RAW_W, dh = RAW_H;
-  if (dw > availW) { dh = Math.round(dh * availW / dw); dw = availW; }
-  if (dh > availH) { dw = Math.round(dw * availH / dh); dh = availH; }
-  return { dw, dh };
-}
 
 /* ── UI pieces ─────────────────────────────────────────── */
 function Btn({ onClick, disabled, variant = "white", children }) {
@@ -82,8 +25,6 @@ function Btn({ onClick, disabled, variant = "white", children }) {
 /* ── Main ──────────────────────────────────────────────── */
 export default function RawMaskEditor() {
   const [ready, setReady]                       = useState(false);
-  const [loading, setLoading]                   = useState(false);
-  const [processing, setProcessing]             = useState(false);
   const [status, setStatus]                     = useState("Sin archivo cargado");
   const [fileName, setFileName]                 = useState("");
   const [selectedClusters, setSelectedClusters] = useState(new Set());
@@ -95,6 +36,9 @@ export default function RawMaskEditor() {
   const imgCanvasRef  = useRef(null);
   const maskCanvasRef = useRef(null);
   const fileInputRef  = useRef(null);
+
+  const { submitRaw, loading }                   = useSubmitRaw();
+  const { processClusters, loading: processing } = useProcessClusters();
 
   /* ── Switch view ── */
   const switchView = useCallback((v) => {
@@ -164,90 +108,58 @@ export default function RawMaskEditor() {
   }, [redrawMask]);
 
   /* ── Upload → backend ── */
-  const handleFile = useCallback((file) => {
+  const handleFile = useCallback(async (file) => {
     if (!file) return;
-    setLoading(true); setReady(false); setStatus(`Enviando ${file.name}…`);
+    setReady(false); setStatus(`Enviando ${file.name}…`);
     setFileName(file.name); setSelectedClusters(new Set());
-
-    const fd = new FormData();
-    fd.append("file", file);
-
-    fetch("/api/v1/ndvi/submit-raw", { method: "POST", body: fd })
-      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(({ ndvi, classified, nir, red, green }) => {
-        if (!nir || !red || !green)
-          throw new Error("El backend no retorna nir/red/green");
-
-        dataRef.current       = { ndvi, nir, red, green };
-        classifiedRef.current = classified;
-
-        const { dw, dh } = displaySize();
-        renderToCanvas(imgCanvasRef.current, buildCIR(nir, red, green), dw, dh);
-
-        const maskC = maskCanvasRef.current;
-        maskC.width = dw; maskC.height = dh;
-        maskC.getContext("2d").clearRect(0, 0, dw, dh);
-
-        setView("cir");
-        setDims({ dw, dh });
-        setReady(true);
-        setLoading(false);
-        setStatus("✓ Imagen cargada — selecciona clusters y presiona Procesar");
-      })
-      .catch((err) => { setLoading(false); setStatus(`⚠ ${err.message}`); });
-  }, []);
+    const data = await submitRaw(file);
+    if (!data) { setStatus("⚠ Error al enviar archivo"); return; }
+    const { ndvi, classified, nir, red, green } = data;
+    if (!nir || !red || !green) { setStatus("⚠ El backend no retorna nir/red/green"); return; }
+    dataRef.current       = { ndvi, nir, red, green };
+    classifiedRef.current = classified;
+    const { dw, dh } = displaySize();
+    renderToCanvas(imgCanvasRef.current, buildCIR(nir, red, green), dw, dh);
+    const maskC = maskCanvasRef.current;
+    maskC.width = dw; maskC.height = dh;
+    maskC.getContext("2d").clearRect(0, 0, dw, dh);
+    setView("cir"); setDims({ dw, dh }); setReady(true);
+    setStatus("✓ Imagen cargada — selecciona clusters y presiona Procesar");
+  }, [submitRaw]);
 
   /* ── Procesar → /process ── */
-  const handleProcess = useCallback(() => {
+  const handleProcess = useCallback(async () => {
     const d   = dataRef.current;
     const cls = classifiedRef.current;
     if (!d || !cls || selectedClusters.size === 0) return;
-
-    setProcessing(true);
     setStatus("Procesando clusters seleccionados…");
-
     const selectedList       = Array.from(selectedClusters);
     const classifiedFiltered = cls.map(row =>
       row.map(v => (v != null && !isNaN(v) && selectedClusters.has(v) ? v : null))
     );
+    const result = await processClusters(d.ndvi, classifiedFiltered, selectedList);
+    if (result) {
+      setStatus(`✓ Procesado — clusters: ${selectedList.map(c => c + 1).join(", ")}`);
+      console.log("[/process] result:", result);
+      /*
+      [/process] result: 
+      {ndvi_masked: Array(1536), stats_ndvi: {…}}
+      ndvi_masked
+      : 
+      (1536) [Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), Array(2048), …]
+      stats_ndvi
+      : 
+      {average: 147.95571236408873, std_dev: 8.387691803211977, coefficient_of_variation: 0.05669055739173885}
+      [[Prototype]]
+      : 
+      Object
+      */
 
-    fetch("/api/v1/ndvi/process", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ndvi:                d.ndvi,
-        classified_filtered: classifiedFiltered,
-        selected_clusters:   selectedList,
-      }),
-    })
-      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then((result) => {
-        setProcessing(false);
-        setStatus(`✓ Procesado — clusters: ${selectedList.map(c => c + 1).join(", ")}`);
-        console.log("[/process] result:", result);
-      })
-      .catch((err) => { setProcessing(false); setStatus(`⚠ ${err.message}`); });
-  }, [selectedClusters]);
+    } else {
+      setStatus("⚠ Error al procesar clusters");
+    }
+  }, [processClusters, selectedClusters]);
 
-  /* ── Save mask ── */
-  const saveMask = () => {
-    const cls = classifiedRef.current;
-    if (!cls || selectedClusters.size === 0) return;
-    const c = document.createElement("canvas");
-    c.width = RAW_W; c.height = RAW_H;
-    const ctx = c.getContext("2d");
-    const id  = ctx.createImageData(RAW_W, RAW_H);
-    for (let y = 0; y < RAW_H; y++)
-      for (let x = 0; x < RAW_W; x++) {
-        const cl = cls[y]?.[x], i = (y * RAW_W + x) * 4;
-        const v  = (cl != null && !isNaN(cl) && selectedClusters.has(cl)) ? 255 : 0;
-        id.data[i]=v; id.data[i+1]=v; id.data[i+2]=v; id.data[i+3]=255;
-      }
-    ctx.putImageData(id, 0, 0);
-    const a = document.createElement("a");
-    a.download = `mascara_${Date.now()}.png`; a.href = c.toDataURL(); a.click();
-    setStatus("✓ Máscara exportada");
-  };
 
   /* ── Botón principal mutante ── */
   const mainBtn = !ready

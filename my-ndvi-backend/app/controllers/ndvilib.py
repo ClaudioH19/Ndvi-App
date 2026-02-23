@@ -1,3 +1,10 @@
+def replace_nan_inf(arr, fill_value=-9999):
+    """
+    Reemplaza NaN, +inf y -inf por fill_value en arrays numpy o listas anidadas.
+    """
+    arr = np.array(arr)
+    arr = np.nan_to_num(arr, nan=fill_value, posinf=fill_value, neginf=fill_value)
+    return arr
 import os
 import rasterio 
 import numpy as np
@@ -133,7 +140,8 @@ async def process_clusters(image_data_classified,nvdi_completo):
     ndvi_masked = apply_mask(ndvi_masked, threshold)
     stats_ndvi = calculate_stats_ndvi(ndvi_masked)
 
-    return {"ndvi_masked": ndvi_masked.tolist(), "stats_ndvi": stats_ndvi}
+    ndvi_masked_clean = replace_nan_inf(ndvi_masked)
+    return {"ndvi_masked": ndvi_masked_clean.tolist(), "stats_ndvi": stats_ndvi}
 """
 def process_images():
     # PROCESAMIENTO PRINCIPAL DE IMAGENES
