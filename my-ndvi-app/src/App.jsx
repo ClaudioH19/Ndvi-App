@@ -1,13 +1,15 @@
-import React from 'react';
-import ExampleComponent from './components/ExampleComponent';
+import React, { useState } from "react";
+import Header from "./components/header";
+import RawMaskEditor from "./components/imageEditor";
 
-const App = () => {
+function App() {
+
   return (
-    <div>
-      <h1>My NDVI App</h1>
-      <ExampleComponent />
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-100 to-green-100">
+      <Header />
+      <RawMaskEditor />
     </div>
   );
-};
+}
 
 export default App;

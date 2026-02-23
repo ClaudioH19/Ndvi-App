@@ -1,0 +1,16 @@
+version: "3.9"
+services:
+  frontend:
+    build: ./my-ndvi-app
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    volumes:
+      - ./my-ndvi-app:/app
+      - /app/node_modules
+
+  backend:
+    build: ./my-ndvi-backend
+    ports:
+      - "8000:8000"
