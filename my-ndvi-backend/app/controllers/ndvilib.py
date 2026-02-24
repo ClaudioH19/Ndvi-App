@@ -115,6 +115,14 @@ async def process_raw_file(file):
     
     try:
         nir, red, green = reconstruir_adc_16bit_cientifico(temp_path)
+        # Normalizar cada banda con su propio máximo — igual que PixelWrench
+        nir   = nir.astype('float32')   / nir.max()
+        red   = red.astype('float32')   / red.max()
+        green = green.astype('float32') / green.max()
+        
+        print(f"[raw] nir min: {nir.min()}, max: {nir.max()}")
+        print(f"[raw] red min: {red.min()}, max: {red.max()}")
+        
         image_data = [nir, red, green]
         ndvi_completo = calculate_nvdi(image_data)
         image_data_classified = clasificate_pixels(image_data, clusters=clusters)
@@ -124,6 +132,7 @@ async def process_raw_file(file):
     finally:
         os.remove(temp_path)
 
+"""
 async def process_clusters(image_data_classified,nvdi_completo):
     # Aplicar penalizacion a puntos aislados (dos pasadas de filtrado)
     # Primera pasada con ventana grande para eliminar grandes zonas de ruido
@@ -143,80 +152,37 @@ async def process_clusters(image_data_classified,nvdi_completo):
     ndvi_masked_clean = replace_nan_inf(ndvi_masked)
     return {"ndvi_masked": ndvi_masked_clean.tolist(), "stats_ndvi": stats_ndvi}
 """
-def process_images():
-    # PROCESAMIENTO PRINCIPAL DE IMAGENES
-    stats=[]
-    for idx,nombre in enumerate(nombres):
-    
-        print(f"\n--- Procesando imagen {idx+1}/{len(nombres)}: {nombre} ---")
-        
-        # Paso 1: Leer y normalizar canales (NIR, Red, Green)
-            # Se normaliza porque asi lo trata pixelwrench2, y asi se asegura que el NDVI este en el rango -1 a 1
-        image_data = list(read_channels_normalized(nombre))
-
-        # Paso 2: Calcular NDVI completo de la imagen original
-        ndvi_completo = calculate_nvdi(image_data)
-
-        #calcular el ndvi completo leyendo TC00069_Ndvi.TIF, que ya esta calculado por pixelwrench2, para evitar diferencias en el calculo del NDVI entre el metodo de pixelwrench2 y el metodo de este script
-        #ndvi_path = os.path.join(data_folder, f"{nombre}_Ndvi.tif")
-        #with rasterio.open(ndvi_path) as src:
-        #    ndvi_completo = src.read(1).astype('float32')
-        #    #dividir por 255 para normalizar el NDVI al rango -1 a 1, ya que pixelwrench2 guarda el NDVI en formato uint8 (0-255) y se necesita normalizarlo para aplicar el threshold correctamente
-        #    ndvi_completo = (ndvi_completo / 255.0) * 2 - 1  # Normalizar a rango -1 a 1
 
 
-        # Paso 3: Clasificar pixeles en la imagen original con K-Means para seleccionar clusters de interes
-        image_data_classified = clasificate_pixels(image_data, clusters=clusters)
-        
-        # Si se omitio la imagen, continuar con la siguiente
-        if image_data_classified is None:
-            continue
-        
-        # Paso 4: Aplicar penalizacion a puntos aislados (dos pasadas de filtrado)
-            # Primera pasada con ventana grande para eliminar grandes zonas de ruido
-            # Segunda pasada con ventana mas pequeña para eliminar puntos aislados residuales
-        image_data_classified = penalize_isolated_points(
-            image_data_classified, 
-            window_size=window_size, 
-            threshold=threshold, 
-            animate=animate_penalization
-        )
+async def process_clusters(image_data_classified, nvdi_completo):
+    print(f"[process_clusters] input shape: {image_data_classified.shape}, dtype: {image_data_classified.dtype}")
+    print(f"[process_clusters] ndvi shape: {nvdi_completo.shape}, dtype: {nvdi_completo.dtype}")
+    print(f"[process_clusters] valid pixels (no NaN): {int(~np.isnan(image_data_classified).sum())}")
+    print(f"[process_clusters] ndvi min: {np.nanmin(image_data_classified)}, max: {np.nanmax(image_data_classified)}")
 
-        # Paso 5: Extraer mascara binaria final (True donde hay datos validos)
-        mask = ~np.isnan(image_data_classified)
-        
-        # Paso 6: Aplicar mascara al NDVI completo original
-        ndvi_masked = np.where(mask, ndvi_completo, np.nan)
+    print("[process_clusters] running penalize_isolated_points...")
+    image_data_classified = penalize_isolated_points(
+        image_data_classified,
+        window_size=window_size,
+        threshold=threshold,
+        animate=False
+    )
+    print(f"[process_clusters] after penalization valid pixels: {int(~np.isnan(image_data_classified).sum())}")
 
+    print("[process_clusters] applying mask...")
+    mask = ~np.isnan(image_data_classified)
+    ndvi_masked = np.where(mask, nvdi_completo, np.nan)
 
-        # EN DESUSO - Se intento eliminar bordes dudosos del NDVI usando deteccion de bordes, pero no se obtuvo mejora significativa
-        # Paso 6.1: Identificar bordes de las zonas clasificadas para eliminar bordes con NDVI dudoso
-        #edges = identify_edges(image_data)
-        #aplicar mascara de bordes al NDVI para eliminar bordes dudosos
-        #ndvi_masked = np.where(edges, np.nan, ndvi_masked)
-        
-        # Paso 7: Aplicar threshold de vegetacion (eliminar NDVI < threshold)
-        ndvi_masked = apply_mask(ndvi_masked, threshold)
+    print("[process_clusters] applying threshold mask...")
+    ndvi_masked = apply_mask(ndvi_masked, threshold)
+    print(f"[process_clusters] after threshold valid pixels: {int(~np.isnan(ndvi_masked).sum())}")
 
-        # Paso 8: Calcular estadisticas del NDVI procesado
-        stats_ndvi = calculate_stats_ndvi(ndvi_masked)
-        
-        # Paso 9: Guardar mascara binaria como archivo TIF
-        mask_filename = save_mask(mask, nombre, data_folder)
-        
-        # Paso 10: Almacenar resultados (nombre, estadisticas, archivo de mascara)
-        stats.append((nombre, stats_ndvi, mask_filename))
-        
-        # Paso 11: Mostrar visualizacion si esta habilitado
-        if plot:
-            show_plot(ndvi_masked, stats_ndvi['average'], nombre, cmap=cmap)
+    print("[process_clusters] calculating stats...")
+    stats_ndvi = calculate_stats_ndvi(ndvi_masked)
+    print(f"[process_clusters] stats: {stats_ndvi}")
 
+    print("[process_clusters] cleaning NaN/Inf...")
+    ndvi_masked_clean = replace_nan_inf(ndvi_masked)
+    print("[process_clusters] done, returning result")
 
-
-    report_path = os.path.join(data_folder, "ndvi_report.txt")
-    with open(report_path, "w") as report_file:
-        report_file.write("Image Name\tThreshold\tNDVI Avg\tNDVI Std\tNDVI CV\tMask File\n")
-        for nombre, stats_ndvi, mask_filename in stats:
-            report_file.write(f"{nombre}\t{threshold}\t{stats_ndvi['average']:.4f}\t{stats_ndvi['std_dev']:.4f}\t{stats_ndvi['coefficient_of_variation']:.4f}\t{mask_filename}\n")
-        print(f"Report generated: {report_path}")
-"""
+    return {"ndvi_masked": ndvi_masked_clean.tolist(), "stats_ndvi": stats_ndvi}

@@ -3,9 +3,10 @@
 export const RAW_W = 2048;
 export const RAW_H = 1536;
 
-// Normaliza al rango real de 0-255
-export function norm(v, brightness = 1) {
-  return Math.min(255, Math.max(0, Math.round((v ?? 0) / 255 * brightness)));
+// Normaliza un valor desde rango [mn, mx] a [0, 255]
+export function norm(v, mn, mx) {
+  const range = mx - mn || 1;
+  return Math.min(255, Math.max(0, Math.round(((v ?? mn) - mn) / range * 255)));
 }
 
 export function buildCIR(nir, red, green) {
