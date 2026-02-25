@@ -51,24 +51,52 @@ def calculate_nvdi(image_data):
     return ndvi
 
 
-async def save_mask(mask, image_name, output_folder):
+async def save_mask(ndvi_masked_arr, image_name):
     """
-    Guarda la mascara binaria como archivo TIF.
-    
+    Genera una máscara binaria uint8 a partir del ndvi_masked procesado
+    y la retorna como bytes de GeoTIFF para que el caller la descargue.
+
+    COMPOSICIÓN DE LA MÁSCARA
+    --------------------------
+    Valor 255  →  pixel válido   (veg. seleccionada, dentro del umbral NDVI)
+    Valor   0  →  pixel excluido (fuera de los clusters elegidos o bajo el umbral)
+
+    La fuente es el array ndvi_masked (float32, 1536×2048) que el backend devuelve
+    en /process.  Los pixels excluidos llegan como sentinel ±9999 (replace_nan_inf);
+    los válidos contienen el valor NDVI real en [-1, 1].
+
+    USO ESPERADO (Python / QGIS)
+    ----------------------------
+    # Con rasterio + numpy:
+    import rasterio, numpy as np
+
+    with rasterio.open("foto_ndvi.tif") as src:
+        ndvi_completo = src.read(1).astype(np.float32)
+
+    with rasterio.open("foto_mask.tif") as src:
+        mask = src.read(1)          # uint8: 0 ó 255
+
+    ndvi_final = np.where(mask == 255, ndvi_completo, np.nan)
+
+    # En QGIS: cargar foto_mask.tif como ráster, estilo pseudocolor
+    # o usar "Calculadora ráster": ndvi_completo * (mask / 255)
+
     Args:
-        mask: matriz booleana con la mascara
-        image_name: nombre base de la imagen
-        output_folder: carpeta donde guardar la mascara
-    
+        ndvi_masked_arr : np.ndarray  float32 (1536, 2048), sentinels ±9999
+        image_name      : str         nombre base sin extensión
+
     Returns:
-        nombre del archivo de mascara generado
+        (bytes, str)  — contenido del GeoTIFF y nombre de archivo sugerido
     """
-    mask_filename = f"{image_name}_mask.tif"
-    mask_output_path = os.path.join(output_folder, mask_filename)
-    
+    import io
+
+    mask = np.where(
+        (ndvi_masked_arr >= 9000) | (ndvi_masked_arr <= -9000), 0, 255
+    ).astype(np.uint8)
+
+    buf = io.BytesIO()
     with rasterio.open(
-        mask_output_path,
-        'w',
+        buf, 'w',
         driver='GTiff',
         height=mask.shape[0],
         width=mask.shape[1],
@@ -77,10 +105,12 @@ async def save_mask(mask, image_name, output_folder):
         crs='+proj=latlong',
         transform=rasterio.transform.from_origin(0, 0, 1, 1),
     ) as dst:
-        dst.write(mask.astype('uint8'), 1)
-    
-    print(f"Mascara guardada en: {mask_output_path}")
-    return mask_filename
+        dst.write(mask, 1)
+
+    buf.seek(0)
+    filename = f"{image_name}_mask.tif"
+    print(f"[save_mask] validos={int((mask==255).sum())}  excluidos={int((mask==0).sum())}  -> {filename}")
+    return buf.read(), filename
 
 
 def reconstruir_adc_16bit_cientifico(raw, width=2048, height=1536):
@@ -106,6 +136,51 @@ def reconstruir_adc_16bit_cientifico(raw, width=2048, height=1536):
         return cv2.resize(banda, (width, height), interpolation=cv2.INTER_LINEAR)
 
     return procesar_banda(nir), procesar_banda(red), procesar_banda(green)
+
+async def process_tiff_files(nir_file, red_file, green_file):
+    """
+    Procesa 3 TIFFs separados (NIR, Red, Green) exportados por PixelWrench2.
+    Cada archivo es un GeoTIFF de banda única de 16 bits.
+    """
+    import tempfile, os
+
+    async def read_band(upload_file):
+        suffix = os.path.splitext(upload_file.filename)[1] or ".tif"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(await upload_file.read())
+            tmp_path = tmp.name
+        try:
+            with rasterio.open(tmp_path) as src:
+                arr = src.read(1).astype(np.float32)
+        finally:
+            os.remove(tmp_path)
+        return arr
+
+    nir   = await read_band(nir_file)
+    red   = await read_band(red_file)
+    green = await read_band(green_file)
+
+    # Normalizar con el máximo de cada banda (igual que PixelWrench2)
+    nir   = nir   / 255
+    red   = red   / 255
+    green = green / 255
+
+    print(f"[tiff] nir   min={nir.min():.4f}  max={nir.max():.4f}  shape={nir.shape}")
+    print(f"[tiff] red   min={red.min():.4f}  max={red.max():.4f}  shape={red.shape}")
+    print(f"[tiff] green min={green.min():.4f}  max={green.max():.4f}  shape={green.shape}")
+
+    image_data = [nir, red, green]
+    ndvi_completo = calculate_nvdi(image_data)
+    image_data_classified = clasificate_pixels(image_data, clusters=clusters)
+
+    return {
+        "nir": nir.tolist(),
+        "red": red.tolist(),
+        "green": green.tolist(),
+        "ndvi": ndvi_completo.tolist(),
+        "classified": image_data_classified.tolist(),
+    }
+
 
 async def process_raw_file(file):
     # Guardar el archivo temporalmente para procesarlo

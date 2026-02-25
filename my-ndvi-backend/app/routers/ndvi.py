@@ -1,4 +1,4 @@
-from fastapi import APIRouter, File, UploadFile, Body, Form
+from fastapi import APIRouter, File, UploadFile, Body, Form, Response
 from app.controllers import ndvilib
 from app.controllers import pixel_processing
 import numpy as np
@@ -9,10 +9,28 @@ router = APIRouter()
 async def process_ndvi(file: UploadFile = File(...)):
     return await ndvilib.process_raw_file(file)
 
+@router.post("/submit-tiffs")
+async def process_tiffs(
+    nir:   UploadFile = File(...),
+    red:   UploadFile = File(...),
+    green: UploadFile = File(...),
+):
+    return await ndvilib.process_tiff_files(nir, red, green)
+
 @router.post("/save-mask")
-async def save_mask(mask: list, image_name: str, output_folder: str):
-    mask_array = np.array(mask)
-    return await ndvilib.save_mask(mask_array, image_name, output_folder)
+async def save_mask(
+    ndvi_masked: UploadFile = File(...),
+    image_name:  str        = Form(...),
+):
+    raw_bytes = await ndvi_masked.read()
+    ndvi_arr  = np.frombuffer(raw_bytes, dtype=np.float32).reshape(1536, 2048)
+
+    tiff_bytes, filename = await ndvilib.save_mask(ndvi_arr, image_name)
+    return Response(
+        content=tiff_bytes,
+        media_type="image/tiff",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 @router.post("/process")
 async def process_clusters(
