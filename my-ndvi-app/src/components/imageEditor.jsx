@@ -1,66 +1,112 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { RAW_W, RAW_H, buildCIR, buildNDVI, buildCIRMasked, buildNDVIMasked, renderToCanvas, displaySize, VIRIDIS } from "../hooks/useImageHelpers";
 import useSubmitTiffs from "../hooks/useSubmitTiffs";
 import useProcessClusters from "../hooks/useProcessClusters";
 import useSaveMask from "../hooks/useSaveMask";
+import Btn from "./Btn";
+import DropZone from "./DropZone";
+import TiffModal from "./TiffModal";
+import SidePanel from "./SidePanel";
+import StatusBar from "./StatusBar";
+import StatsCard from "./StatsCard";
 
-const NUM_CLUSTERS = 6;
 const CLUSTER_COLOR = [135, 206, 235, 120];
+const isSentinel    = (v) => v == null || isNaN(v) || v >= 9000 || v <= -9000;
+const BAND_KEYWORD  = { nir: /nir/i, red: /red/i, green: /green/i };
 
-
-/* ── Sentinel: backend usa -9999/9999 para NA/Inf ── */
-const isSentinel = (v) => v == null || isNaN(v) || v >= 9000 || v <= -9000;
-
-/* ── UI pieces ─────────────────────────────────────────── */
-function Btn({ onClick, disabled, variant = "white", children }) {
-  const v = {
-    white:  "border-white/25 bg-white/10 hover:bg-white/20 hover:border-yellow-300 text-amber-100",
-    green:  "border-green-400/50 bg-green-700/25 hover:bg-green-600/40 text-green-200",
-    yellow: "border-yellow-500/70 bg-yellow-600/30 hover:bg-yellow-500/45 text-yellow-200",
-    ghost:  "border-white/10 bg-transparent hover:bg-white/10 text-amber-200/50 hover:text-amber-100",
-  }[variant];
-  return (
-    <button onClick={onClick} disabled={disabled}
-      className={`flex items-center gap-2 px-4 py-2 border-2 font-sans font-semibold text-xs uppercase tracking-widest transition-all disabled:opacity-30 disabled:cursor-not-allowed ${v}`}>
-      {children}
-    </button>
-  );
-}
-
-/* ── Main ──────────────────────────────────────────────── */
 export default function RawMaskEditor() {
   const [ready, setReady]                       = useState(false);
   const [status, setStatus]                     = useState("Sin archivo cargado");
   const [fileName, setFileName]                 = useState("");
+  const [fileNames, setFileNames]               = useState(null);
   const [selectedClusters, setSelectedClusters] = useState(new Set());
   const [dims, setDims]                         = useState({ dw: 0, dh: 0 });
   const [view, setView]                         = useState("cir");
   const [stats, setStats]                       = useState(null);
   const [tiffModalOpen, setTiffModalOpen]       = useState(false);
   const [tiffFiles, setTiffFiles]               = useState({ nir: null, red: null, green: null });
+  const [tiffWarnings, setTiffWarnings]         = useState({ nir: false, red: false, green: false });
+  const [modalDragOver, setModalDragOver]       = useState(false);
+  const [mainDragOver, setMainDragOver]         = useState(false);
+  const [hoverInfo, setHoverInfo]               = useState(null);
 
   const dataRef       = useRef(null);
   const classifiedRef = useRef(null);
   const imgCanvasRef  = useRef(null);
   const maskCanvasRef = useRef(null);
-  const nirInputRef   = useRef(null);
-  const redInputRef   = useRef(null);
-  const greenInputRef = useRef(null);
 
-  const { submitTiffs, loading }                 = useSubmitTiffs();
-  const { processClusters, loading: processing } = useProcessClusters();
-  const { saveMask: saveMaskApi, loading: saving } = useSaveMask();
+  const { submitTiffs,     loading,              error: tiffError    } = useSubmitTiffs();
+  const { processClusters, loading: processing,  error: processError } = useProcessClusters();
+  const { saveMask: saveMaskApi, loading: saving, error: saveError   } = useSaveMask();
+
+  /* ── Hover NDVI sobre el canvas ── */
+  const handleCanvasHover = useCallback((e) => {
+    const d = dataRef.current;
+    if (!d?.ndvi || !dims.dw || !dims.dh) return;
+    const rect = imgCanvasRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const rx = Math.floor(x * RAW_W / dims.dw);
+    const ry = Math.floor(y * RAW_H / dims.dh);
+    if (rx < 0 || ry < 0 || rx >= RAW_W || ry >= RAW_H) { setHoverInfo(null); return; }
+    const ndviVal = d.ndvi?.[ry]?.[rx];
+    setHoverInfo({ x, y, rx, ry, ndvi: isSentinel(ndviVal) ? 'NA' : ndviVal.toFixed(3) });
+  }, [dims]);
+
+  /* ── Propagar errores de los hooks al status bar ── */
+  useEffect(() => { if (tiffError)    setStatus(`⚠ Error al enviar bandas: ${tiffError}`);    }, [tiffError]);
+  useEffect(() => { if (processError) setStatus(`⚠ Error al procesar: ${processError}`);       }, [processError]);
+  useEffect(() => { if (saveError)    setStatus(`⚠ Error al guardar máscara: ${saveError}`);   }, [saveError]);
+
+  /* ── Validate file band keyword ── */
+  const validateFile = useCallback((key, file) => {
+    if (!file) return;
+    setTiffWarnings(prev => ({ ...prev, [key]: !BAND_KEYWORD[key].test(file.name) }));
+  }, []);
+
+  /* ── Extrae el nombre base: todo lo que va antes del primer "_" ── */
+  const extractBase = useCallback((file) => {
+    if (!file) return null;
+    const name = file.name.replace(/\.(tif|tiff)$/i, "");
+    const idx = name.indexOf("_");
+    return idx !== -1 ? name.slice(0, idx) : name;
+  }, []);
+
+  /* ── Auto-asignar archivos arrastrados al modal por palabra clave ── */
+  const autoAssignDrop = useCallback((files) => {
+    const tiffs = Array.from(files).filter(f => /\.(tif|tiff)$/i.test(f.name));
+    if (!tiffs.length) return;
+    const assigned = { nir: null, red: null, green: null };
+    for (const f of tiffs) {
+      if (/nir/i.test(f.name))        assigned.nir   = f;
+      else if (/red/i.test(f.name))   assigned.red   = f;
+      else if (/green/i.test(f.name)) assigned.green = f;
+    }
+    setTiffFiles(prev => ({
+      nir:   assigned.nir   ?? prev.nir,
+      red:   assigned.red   ?? prev.red,
+      green: assigned.green ?? prev.green,
+    }));
+    setTiffWarnings({
+      nir:   assigned.nir   ? false : false,
+      red:   assigned.red   ? false : false,
+      green: assigned.green ? false : false,
+    });
+  }, []);
 
   const saveMask = useCallback(async () => {
     const d = dataRef.current;
     if (!d?.ndvi_masked) return;
-    const name = fileName.replace(/\.[^.]+$/, "") || "mask";
+    // Use only the base name (before first '_') of the NIR file
+    let name = fileNames?.nir || fileName;
+    name = name.replace(/\.(tif|tiff)$/i, "");
+    const idx = name.indexOf("_");
+    name = idx !== -1 ? name.slice(0, idx) : name;
     const result = await saveMaskApi(d.ndvi_masked, name);
     if (result) setStatus(`✓ Máscara guardada: ${result.filename}`);
     else        setStatus("⚠ Error al guardar máscara");
   }, [fileName, saveMaskApi]);
 
-  /* ── Switch view ── */
   const switchView = useCallback((v) => {
     setView(v);
     const d = dataRef.current;
@@ -107,7 +153,7 @@ export default function RawMaskEditor() {
     if (maskC) maskC.getContext("2d").clearRect(0, 0, dw, dh);
   }, []);
 
-  /* ── Redraw cluster mask ── */
+  /* ── Switch view ── */
   const redrawMask = useCallback((active, dw, dh) => {
     const maskC = maskCanvasRef.current;
     const cls   = classifiedRef.current;
@@ -148,15 +194,23 @@ export default function RawMaskEditor() {
     if (c != null && !isNaN(c)) toggleCluster(c);
   }, [dims, toggleCluster]);
 
-  const handleUndo = useCallback(() => {
-    setSelectedClusters((prev) => {
-      if (prev.size === 0) return prev;
-      const next = new Set(Array.from(prev).slice(0, -1));
-      const { dw, dh } = displaySize();
-      redrawMask(next, dw, dh);
-      return next;
-    });
-  }, [redrawMask]);
+  const handleReset = useCallback(() => {
+    dataRef.current       = null;
+    classifiedRef.current = null;
+    setReady(false);
+    setStatus("Sin archivo cargado");
+    setFileName("");
+    setFileNames(null);
+    setSelectedClusters(new Set());
+    setStats(null);
+    setView("cir");
+    setDims({ dw: 0, dh: 0 });
+    setHoverInfo(null);
+    const img  = imgCanvasRef.current;
+    const mask = maskCanvasRef.current;
+    if (img)  img.getContext("2d").clearRect(0, 0, img.width,  img.height);
+    if (mask) mask.getContext("2d").clearRect(0, 0, mask.width, mask.height);
+  }, []);
 
   /* ── Upload ── */
   const handleFiles = useCallback(async (nirFile, redFile, greenFile) => {
@@ -164,12 +218,13 @@ export default function RawMaskEditor() {
     setTiffModalOpen(false);
     setReady(false); setStatus("Enviando bandas TIFF…");
     setFileName(`NIR: ${nirFile.name}`);
-    setSelectedClusters(new Set()); setStats(null);
+    setFileNames({ nir: nirFile.name, red: redFile.name, green: greenFile.name });
+      setSelectedClusters(new Set()); setStats(null);
     const data = await submitTiffs(nirFile, redFile, greenFile);
     if (!data) { setStatus("⚠ Error al enviar archivos"); return; }
-    const { ndvi, classified, nir, red, green } = data;
+    const { ndvi, classified, nir, red, green, cluster_labels } = data;
     if (!nir || !red || !green) { setStatus("⚠ El backend no retorna nir/red/green"); return; }
-    dataRef.current       = { ndvi, nir, red, green };  // ndvi_masked se limpia al cargar nueva imagen
+    dataRef.current       = { ndvi, nir, red, green, cluster_labels };  // ndvi_masked se limpia al cargar nueva imagen
     classifiedRef.current = classified;
     const { dw, dh } = displaySize();
     renderToCanvas(imgCanvasRef.current, buildCIR(nir, red, green), dw, dh);
@@ -179,6 +234,16 @@ export default function RawMaskEditor() {
     setView("cir"); setDims({ dw, dh }); setReady(true);
     setStatus("✓ Imagen cargada — selecciona clusters y presiona Procesar");
     setTiffFiles({ nir: null, red: null, green: null });
+    setTiffWarnings({ nir: false, red: false, green: false });
+      // Auto-select clusters labeled 'Planta'
+      if (Array.isArray(cluster_labels)) {
+        const plantaSet = new Set();
+        cluster_labels.forEach((label, idx) => {
+          if (label === "Planta") plantaSet.add(idx);
+        });
+        setSelectedClusters(plantaSet);
+        redrawMask(plantaSet, dw, dh);
+      }
   }, [submitTiffs]);
 
   /* ── Procesar ── */
@@ -238,18 +303,16 @@ export default function RawMaskEditor() {
     ndvi_masked: "NDVI Masked — viridis · resultado del proceso",
   }[view] ?? view;
 
+  /* ── Render ── */
   return (
     <div className="flex flex-col w-full min-h-screen bg-amber-50">
 
       {/* Toolbar */}
       <div className="w-full bg-gradient-to-r from-green-900 to-stone-800 border-b-4 border-yellow-600 px-6 py-3 flex items-center gap-3">
-
         <Btn onClick={mainBtn.onClick} disabled={mainBtn.disabled} variant={mainBtn.variant}>
           {mainBtn.icon}{mainBtn.label}
         </Btn>
-
         <div className="w-px h-7 bg-white/20" />
-
         <Btn onClick={saveMask} disabled={!stats || saving} variant="green">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
@@ -257,13 +320,13 @@ export default function RawMaskEditor() {
           </svg>
           {saving ? "Guardando…" : "Guardar Máscara"}
         </Btn>
-
         <div className="ml-auto">
-          <Btn onClick={handleUndo} disabled={selectedClusters.size === 0} variant="ghost">
+          <Btn onClick={handleReset} disabled={!ready && !fileName} variant="ghost">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path d="M3 7v6h6"/><path d="M3 13C5 8 10 5 15 5a9 9 0 010 18c-4 0-7.5-2-9-5"/>
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+              <path d="M3 3v5h5"/>
             </svg>
-            Deshacer
+            Reiniciar
           </Btn>
         </div>
       </div>
@@ -273,22 +336,12 @@ export default function RawMaskEditor() {
         <div className="flex-1 min-w-0 flex flex-col p-5 overflow-auto">
 
           {!ready && !loading && (
-            <div className="flex-1 border-2 border-dashed border-yellow-500 hover:border-green-600 bg-yellow-50/40
-                            hover:bg-green-50/30 flex flex-col items-center justify-center cursor-pointer transition-all min-h-96 relative"
-              onClick={() => setTiffModalOpen(true)}
-              onDragOver={(e) => e.preventDefault()}>
-              <div className="absolute inset-3 border border-dashed border-yellow-400/25 pointer-events-none" />
-              <svg width="56" height="56" viewBox="0 0 80 80" fill="none" className="mb-4 opacity-35">
-                <line x1="40" y1="75" x2="40" y2="10" stroke="#c8a84b" strokeWidth="2"/>
-                <ellipse cx="40" cy="12" rx="5" ry="10" fill="#c8a84b"/>
-                <ellipse cx="31" cy="22" rx="4" ry="8" fill="#7fb84e" transform="rotate(-20 31 22)"/>
-                <ellipse cx="49" cy="22" rx="4" ry="8" fill="#7fb84e" transform="rotate(20 49 22)"/>
-                <ellipse cx="27" cy="34" rx="4" ry="8" fill="#5a8a3c" transform="rotate(-25 27 34)"/>
-                <ellipse cx="53" cy="34" rx="4" ry="8" fill="#5a8a3c" transform="rotate(25 53 34)"/>
-              </svg>
-              <p className="font-sans font-bold text-sm uppercase tracking-widest text-stone-500 mb-1">Cargar bandas PixelWrench2</p>
-              <p className="font-sans text-xs text-stone-400">NIR · Red · Green — TIFF individuales</p>
-            </div>
+            <DropZone
+              mainDragOver={mainDragOver}
+              setMainDragOver={setMainDragOver}
+              autoAssignDrop={autoAssignDrop}
+              onOpen={() => setTiffModalOpen(true)}
+            />
           )}
 
           {loading && (
@@ -302,191 +355,75 @@ export default function RawMaskEditor() {
             <p className="font-sans text-[11px] uppercase tracking-widest text-stone-400 mb-2">
               {viewLabel} · click para activar cluster
             </p>
-            <div className="relative inline-block border-2 border-yellow-600 shadow-[5px_5px_0_#4a3f28] overflow-hidden cursor-crosshair"
+            <div
+              className="relative inline-block border-2 border-yellow-600 shadow-[5px_5px_0_#4a3f28] overflow-hidden cursor-crosshair"
               style={{ width: dims.dw, height: dims.dh, maxWidth: "100%" }}
-              onClick={handleClick}>
+              onClick={handleClick}
+              onMouseMove={handleCanvasHover}
+              onMouseLeave={() => setHoverInfo(null)}>
               <span className="absolute top-1.5 left-2 z-10 font-sans text-[9px] tracking-[.2em] uppercase text-yellow-300/60 pointer-events-none select-none">
                 {RAW_W}×{RAW_H}
               </span>
               <canvas ref={imgCanvasRef}  className="absolute inset-0 z-0" />
               <canvas ref={maskCanvasRef} className="absolute inset-0 z-10" />
               <canvas width={dims.dw || 1} height={dims.dh || 1} className="relative z-20 opacity-0 block" />
+              {hoverInfo && (
+                <div style={{
+                  position: "absolute",
+                  left: Math.max(0, Math.min(dims.dw - 80, hoverInfo.x + 12)),
+                  top:  Math.max(0, Math.min(dims.dh - 40, hoverInfo.y + 12)),
+                  zIndex: 30, pointerEvents: "none",
+                  background: "rgba(255,255,255,0.97)",
+                  border: "1.5px solid #eab308", borderRadius: 6,
+                  padding: "4px 10px", fontFamily: "monospace",
+                  fontSize: 13, color: "#78350f",
+                  boxShadow: "2px 2px 8px #0002",
+                }}>
+                  <div>NDVI: <b>{hoverInfo.ndvi}</b></div>
+                  <div className="text-stone-400 text-xs">({hoverInfo.rx}, {hoverInfo.ry})</div>
+                </div>
+              )}
             </div>
           </div>
         </div>
 
-        {/* Side panel */}
+        <StatsCard stats={stats} />
+
         {ready && !loading && (
-          <div className="w-48 flex-shrink-0 flex flex-col gap-3 p-4 bg-amber-100/60 border-l-2 border-yellow-600/30 overflow-y-auto">
-
-            <div className="bg-white/60 border border-stone-200 border-l-4 border-l-yellow-500 p-3">
-              <p className="font-sans text-[10px] uppercase tracking-widest text-stone-400 mb-1">Archivo</p>
-              <p className="font-sans font-semibold text-xs text-stone-700 break-all">{fileName}</p>
-            </div>
-
-            <div className="bg-white/60 border border-stone-200 border-l-4 border-l-yellow-400 p-3">
-              <p className="font-sans text-[10px] uppercase tracking-widest text-stone-400 mb-2">Vista</p>
-              <div className="flex flex-col gap-1.5">
-                {[
-                  { key: "cir",  label: "CIR",  sub: "NIR · Red · Green", grad: "linear-gradient(to right, #ff2288, #44cc88)" },
-                  { key: "ndvi", label: "NDVI", sub: "Escala de grises",   grad: "linear-gradient(to right, #000, #fff)" },
-                ].map(({ key, label, sub, grad }) => (
-                  <button key={key} onClick={() => switchView(key)}
-                    className={`flex items-center gap-2 px-2 py-1.5 border text-left transition-all
-                      ${view === key ? "border-stone-300 bg-white/90" : "border-stone-100 bg-transparent opacity-50"}`}>
-                    <div className="w-3 h-10 rounded-sm flex-shrink-0" style={{ background: grad }} />
-                    <div>
-                      <p className="font-sans font-bold text-xs text-stone-700">{label}</p>
-                      <p className="font-sans text-[9px] text-stone-400 uppercase tracking-wider">{sub}</p>
-                    </div>
-                    {view === key && <span className="ml-auto text-green-700 text-xs">✓</span>}
-                  </button>
-                ))}
-                {stats && (
-                  <button onClick={() => switchView("ndvi_masked")}
-                    className={`flex items-center gap-2 px-2 py-1.5 border text-left transition-all
-                      ${view === "ndvi_masked" ? "border-stone-300 bg-white/90" : "border-stone-100 bg-transparent opacity-50"}`}>
-                    {/* Barra viridis real: morado→azul→verde→amarillo */}
-                    <div className="w-3 h-10 rounded-sm flex-shrink-0" style={{
-                      background: "linear-gradient(to bottom, rgb(68,1,84), rgb(59,82,139), rgb(33,145,140), rgb(94,201,97), rgb(253,231,36))"
-                    }} />
-                    <div>
-                      <p className="font-sans font-bold text-xs text-stone-700">Masked</p>
-                      <p className="font-sans text-[9px] text-stone-400 uppercase tracking-wider">Viridis</p>
-                    </div>
-                    {view === "ndvi_masked" && <span className="ml-auto text-green-700 text-xs">✓</span>}
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {selectedClusters.size > 0 && (
-              <div className="bg-white/60 border border-stone-200 border-l-4 border-l-sky-400 p-3">
-                <p className="font-sans text-[10px] uppercase tracking-widest text-stone-400 mb-1">Selección</p>
-                <p className="font-sans font-bold text-sm text-sky-700">{selectedClusters.size} cluster{selectedClusters.size > 1 ? "s" : ""}</p>
-                <p className="font-sans text-[10px] text-stone-400 mt-0.5">
-                  {Array.from(selectedClusters).map(c => `C${c + 1}`).join(" · ")}
-                </p>
-              </div>
-            )}
-
-            {stats && (
-              <div className="bg-white/60 border border-stone-200 border-l-4 border-l-emerald-500 p-3">
-                <p className="font-sans text-[10px] uppercase tracking-widest text-stone-400 mb-2">Stats NDVI</p>
-                <div className="flex flex-col gap-2">
-                  <div>
-                    <p className="font-sans text-[9px] uppercase tracking-widest text-stone-400">Promedio</p>
-                    <p className="font-sans font-bold text-sm text-emerald-700">{stats.average.toFixed(2)}</p>
-                  </div>
-                  <div>
-                    <p className="font-sans text-[9px] uppercase tracking-widest text-stone-400">Desv. Estándar</p>
-                    <p className="font-sans font-bold text-sm text-emerald-700">{stats.std_dev.toFixed(3)}</p>
-                  </div>
-                  <div>
-                    <p className="font-sans text-[9px] uppercase tracking-widest text-stone-400">CV</p>
-                    <p className="font-sans font-bold text-sm text-emerald-700">
-                      {(stats.coefficient_of_variation * 100).toFixed(2)}%
-                    </p>
-                    <div className="mt-1 h-1.5 bg-stone-200 rounded-full overflow-hidden">
-                      <div className="h-full bg-emerald-500 rounded-full transition-all"
-                        style={{ width: `${Math.min(100, (stats.coefficient_of_variation / 0.3) * 100)}%` }} />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-          </div>
+          <SidePanel
+            fileNames={fileNames}
+            view={view}
+            switchView={switchView}
+            hasMasked={!!stats}
+            selectedClusters={selectedClusters}
+            clusterLabels={dataRef.current?.cluster_labels}
+          />
         )}
       </div>
 
-      {/* Status bar */}
-      <div className="w-full bg-gradient-to-r from-stone-800 to-stone-900 border-t-2 border-yellow-600 px-6 py-1.5 flex items-center gap-3">
-        <div className={`w-2 h-2 rounded-full flex-shrink-0 ${ready ? "bg-green-400" : loading ? "bg-yellow-400 animate-pulse" : "bg-stone-600"}`} />
-        <span className="font-sans text-[11px] uppercase tracking-wider text-stone-400">{status}</span>
-        {fileName && <span className="ml-auto font-sans text-[11px] text-stone-600">{fileName}</span>}
-      </div>
+      <StatusBar status={status} ready={ready} loading={loading} fileName={fileName} />
 
-      {/* ── Modal selección de TIFFs ── */}
       {tiffModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm"
-          onClick={() => setTiffModalOpen(false)}>
-          <div className="flex flex-col gap-5 bg-stone-900 border-2 border-yellow-600 shadow-[8px_8px_0_#1a130a] p-5 w-[680px] max-w-[95vw]"
-            onClick={(e) => e.stopPropagation()}>
-
-            {/* Header */}
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="font-sans font-bold text-sm uppercase tracking-widest text-amber-200">Cargar Bandas PixelWrench2</p>
-                <p className="font-sans text-[10px] text-stone-400 uppercase tracking-wider mt-1">Selecciona los 3 TIFFs exportados — cada uno con su banda individual</p>
-              </div>
-              <button onClick={() => setTiffModalOpen(false)}
-                className="text-stone-500 hover:text-amber-200 transition-colors ml-4 flex-shrink-0">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path d="M18 6 6 18M6 6l12 12"/>
-                </svg>
-              </button>
-            </div>
-
-            {/* Band slots */}
-            <div className="flex gap-3">
-              {[
-                { key: "nir",   label: "NIR",   ref: nirInputRef,   accent: "#e0457b", note: "Near Infrared" },
-                { key: "red",   label: "Red",   ref: redInputRef,   accent: "#e07845", note: "Canal Rojo" },
-                { key: "green", label: "Green", ref: greenInputRef, accent: "#45c07a", note: "Canal Verde" },
-              ].map(({ key, label, ref, accent, note }) => (
-                <div key={key}
-                  className="flex-1 flex flex-col items-center justify-center gap-2 border-2 border-dashed py-6 px-3 cursor-pointer transition-all"
-                  style={{
-                    borderColor: tiffFiles[key] ? accent : "#44403c",
-                    background: tiffFiles[key] ? `${accent}12` : "transparent",
-                  }}
-                  onClick={() => ref.current?.click()}>
-                  <input ref={ref} type="file" accept=".tif,.tiff" className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files[0];
-                      if (f) setTiffFiles(prev => ({ ...prev, [key]: f }));
-                      e.target.value = "";
-                    }} />
-
-                  <div className="w-9 h-9 rounded-full flex items-center justify-center border-2 transition-all"
-                    style={{ borderColor: accent, color: accent, background: tiffFiles[key] ? `${accent}22` : "transparent" }}>
-                    {tiffFiles[key]
-                      ? <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><polyline points="20 6 9 17 4 12"/></svg>
-                      : <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                    }
-                  </div>
-
-                  <p className="font-sans font-bold text-sm uppercase tracking-widest" style={{ color: accent }}>{label}</p>
-                  <p className="font-sans text-[9px] uppercase tracking-wider text-stone-500">{note}</p>
-                  <p className="font-sans text-[10px] text-center leading-tight min-h-[2.5em] break-all"
-                    style={{ color: tiffFiles[key] ? "#d6d3d1" : "#78716c" }}>
-                    {tiffFiles[key] ? tiffFiles[key].name : "Click para seleccionar"}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            {/* Actions */}
-            <div className="flex gap-3 justify-end border-t border-stone-700 pt-4">
-              <button
-                onClick={() => { setTiffModalOpen(false); setTiffFiles({ nir: null, red: null, green: null }); }}
-                className="px-4 py-2 border border-stone-600 text-stone-400 hover:text-stone-200 hover:border-stone-400 font-sans text-xs uppercase tracking-widest transition-all">
-                Cancelar
-              </button>
-              <button
-                disabled={!tiffFiles.nir || !tiffFiles.red || !tiffFiles.green}
-                onClick={() => handleFiles(tiffFiles.nir, tiffFiles.red, tiffFiles.green)}
-                className="flex items-center gap-2 px-5 py-2 border-2 font-sans font-semibold text-xs uppercase tracking-widest transition-all border-yellow-500/70 bg-yellow-600/30 hover:bg-yellow-500/45 text-yellow-200 disabled:opacity-30 disabled:cursor-not-allowed">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-                </svg>
-                Procesar Bandas
-              </button>
-            </div>
-          </div>
-        </div>
+        <TiffModal
+          tiffFiles={tiffFiles}           setTiffFiles={setTiffFiles}
+          tiffWarnings={tiffWarnings}     setTiffWarnings={setTiffWarnings}
+          modalDragOver={modalDragOver}   setModalDragOver={setModalDragOver}
+          extractBase={extractBase}
+          validateFile={validateFile}
+          autoAssignDrop={autoAssignDrop}
+          onClose={() => setTiffModalOpen(false)}
+          onSubmit={handleFiles}
+        />
       )}
     </div>
   );
 }
+
+
+
+
+
+
+
+
+

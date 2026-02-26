@@ -1,22 +1,17 @@
-def replace_nan_inf(arr, fill_value=-9999):
-    """
-    Reemplaza NaN, +inf y -inf por fill_value en arrays numpy o listas anidadas.
-    """
-    arr = np.array(arr)
-    arr = np.nan_to_num(arr, nan=fill_value, posinf=fill_value, neginf=fill_value)
-    return arr
-import os
-import rasterio 
-import numpy as np
-import matplotlib.pyplot as plt
-import cv2
-from app.controllers.pixel_processing import clasificate_pixels, penalize_isolated_points
-
 ############################################################################
 # Este archivo trabaja con la herramienta de batch de PixelWrench2         #
 # Para calcular el NDVI de varias imagenes primero se necesita obtener las #
 # bandas necesarias (NIR y Red) y normalizarlas entre 0 y 1 al hacer /255  #
 ############################################################################
+
+
+import os
+import rasterio 
+import numpy as np
+import matplotlib.pyplot as plt
+import cv2
+from app.controllers.pixel_processing import clasificate_pixels, penalize_isolated_points, label_clusters
+
 
 # CONFIGURACION - Modificar segun necesidad
 ############################################################################ y RAW
@@ -26,7 +21,14 @@ clusters = 6       # numero de clusters para kmeans
 window_size = 256   # tamano de la ventana para penalizar puntos aislados, si hay mas NA se elimina el pixel
 ############################################################################
 
-    
+def replace_nan_inf(arr, fill_value=-9999):
+    """
+    Reemplaza NaN, +inf y -inf por fill_value en arrays numpy o listas anidadas.
+    """
+    arr = np.array(arr)
+    arr = np.nan_to_num(arr, nan=fill_value, posinf=fill_value, neginf=fill_value)
+    return arr
+
 
 def apply_mask(ndvi, threshold=threshold):
     #todo lo menor al threshold se considera no vegetacion
@@ -171,14 +173,15 @@ async def process_tiff_files(nir_file, red_file, green_file):
 
     image_data = [nir, red, green]
     ndvi_completo = calculate_nvdi(image_data)
-    image_data_classified = clasificate_pixels(image_data, clusters=clusters)
+    labels, centroids = clasificate_pixels(image_data, clusters=clusters)
 
     return {
         "nir": nir.tolist(),
         "red": red.tolist(),
         "green": green.tolist(),
         "ndvi": ndvi_completo.tolist(),
-        "classified": image_data_classified.tolist(),
+        "classified": labels.tolist(),
+        "cluster_labels": label_clusters(centroids),
     }
 
 
@@ -197,37 +200,17 @@ async def process_raw_file(file):
         
         print(f"[raw] nir min: {nir.min()}, max: {nir.max()}")
         print(f"[raw] red min: {red.min()}, max: {red.max()}")
-        
+        print(f"[raw] green min: {green.min()}, max: {green.max()}")
         image_data = [nir, red, green]
         ndvi_completo = calculate_nvdi(image_data)
-        image_data_classified = clasificate_pixels(image_data, clusters=clusters)
-        
-        return {"nir": nir.tolist(), "red": red.tolist(), "green": green.tolist(), "ndvi": ndvi_completo.tolist(), "classified": image_data_classified.tolist()}
+        labels, centroids = clasificate_pixels(image_data, clusters=clusters)
+        print(f"[raw] NDVI min: {ndvi_completo.min()}, max: {ndvi_completo.max()}")
+        print(f"[raw] Cluster centroids:\n{centroids}")
+        return {"nir": nir.tolist(), "red": red.tolist(), "green": green.tolist(), "ndvi": ndvi_completo.tolist(), "classified": labels.tolist(), "cluster_labels": label_clusters(centroids)}
 
     finally:
         os.remove(temp_path)
-
-"""
-async def process_clusters(image_data_classified,nvdi_completo):
-    # Aplicar penalizacion a puntos aislados (dos pasadas de filtrado)
-    # Primera pasada con ventana grande para eliminar grandes zonas de ruido
-    # Segunda pasada con ventana mas pequeña para eliminar puntos aislados residuales
-    image_data_classified = penalize_isolated_points(
-        image_data_classified, 
-        window_size=window_size, 
-        threshold=threshold, 
-        animate=False
-    )
-
-    mask = ~np.isnan(image_data_classified)
-    ndvi_masked = np.where(mask, nvdi_completo, np.nan)
-    ndvi_masked = apply_mask(ndvi_masked, threshold)
-    stats_ndvi = calculate_stats_ndvi(ndvi_masked)
-
-    ndvi_masked_clean = replace_nan_inf(ndvi_masked)
-    return {"ndvi_masked": ndvi_masked_clean.tolist(), "stats_ndvi": stats_ndvi}
-"""
-
+    
 
 async def process_clusters(image_data_classified, nvdi_completo):
     print(f"[process_clusters] input shape: {image_data_classified.shape}, dtype: {image_data_classified.dtype}")

@@ -8,18 +8,20 @@ import sklearn.cluster
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 from scipy.ndimage import uniform_filter
+from app.controllers.cluster_rules import apply_rules
 
 
 def clasificate_pixels(image_data, clusters=5):
     """
-    Clasifica pixeles usando K-Means y devuelve el array de clusters para cada pixel.
-    
+    Clasifica pixeles usando K-Means y devuelve el array de clusters para cada pixel y los centroides.
+
     Args:
         image_data: tuple (nir, red, green) - bandas normalizadas
         clusters: numero de clusters para K-Means
-    
+
     Returns:
         labels: array 2D con el cluster asignado a cada pixel
+        centroids: array 2D (clusters x features) con los centroides de cada cluster
     """
     nir, red, green = image_data
     ndvi = (nir - red) / (nir + red + 1e-10)
@@ -53,7 +55,16 @@ def clasificate_pixels(image_data, clusters=5):
     kmeans = sklearn.cluster.KMeans(n_clusters=clusters, random_state=0)
     kmeans.fit(pixels)
     labels = kmeans.labels_.reshape(ndvi.shape)
-    return labels
+    centroids = kmeans.cluster_centers_
+    return labels, centroids
+
+
+def label_clusters(centroids):
+    """
+    Asigna una etiqueta a cada cluster usando las reglas de cluster_rules.py.
+    Edita ese archivo para ajustar umbrales y agregar/quitar etiquetas.
+    """
+    return [apply_rules(c) for c in centroids]
 
 
 def _apply_penalization(ndvi_input, win_size):
