@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+redis==5.2.1
 affine==2.4.0
 annotated-types==0.7.0
 anywidget==0.9.21

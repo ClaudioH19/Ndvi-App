@@ -3,7 +3,9 @@ import { RAW_W, RAW_H, buildCIR, buildNDVI, buildCIRMasked, buildNDVIMasked, ren
 import useSubmitTiffs from "../hooks/useSubmitTiffs";
 import useProcessClusters from "../hooks/useProcessClusters";
 import useSaveMask from "../hooks/useSaveMask";
+import useDownloadSession from "../hooks/useDownloadSession";
 import Btn from "./Btn";
+import Spinner from "./Spinner";
 import DropZone from "./DropZone";
 import TiffModal from "./TiffModal";
 import SidePanel from "./SidePanel";
@@ -29,15 +31,21 @@ export default function RawMaskEditor() {
   const [modalDragOver, setModalDragOver]       = useState(false);
   const [mainDragOver, setMainDragOver]         = useState(false);
   const [hoverInfo, setHoverInfo]               = useState(null);
+  // Contador de resultados guardados en Redis en esta sesión
+  const [sessionSavedCount, setSessionSavedCount] = useState(0);
 
   const dataRef       = useRef(null);
   const classifiedRef = useRef(null);
   const imgCanvasRef  = useRef(null);
   const maskCanvasRef = useRef(null);
 
+  // Identificador de sesión único generado una sola vez por pestaña/carga de página
+  const [sessionId] = useState(() => crypto.randomUUID());
+
   const { submitTiffs,     loading,              error: tiffError    } = useSubmitTiffs();
   const { processClusters, loading: processing,  error: processError } = useProcessClusters();
   const { saveMask: saveMaskApi, loading: saving, error: saveError   } = useSaveMask();
+  const { downloadSession, downloading, error: downloadError }         = useDownloadSession();
 
   /* ── Hover NDVI sobre el canvas ── */
   const handleCanvasHover = useCallback((e) => {
@@ -49,14 +57,17 @@ export default function RawMaskEditor() {
     const rx = Math.floor(x * RAW_W / dims.dw);
     const ry = Math.floor(y * RAW_H / dims.dh);
     if (rx < 0 || ry < 0 || rx >= RAW_W || ry >= RAW_H) { setHoverInfo(null); return; }
-    const ndviVal = d.ndvi?.[ry]?.[rx];
+    // Si hay máscara aplicada y estamos en vista masked, usar ndvi_masked
+    const useMasked = view === "ndvi_masked" && d.ndvi_masked;
+    const ndviVal = useMasked ? d.ndvi_masked?.[ry]?.[rx] : d.ndvi?.[ry]?.[rx];
     setHoverInfo({ x, y, rx, ry, ndvi: isSentinel(ndviVal) ? 'NA' : ndviVal.toFixed(3) });
-  }, [dims]);
+  }, [dims, view]);
 
   /* ── Propagar errores de los hooks al status bar ── */
-  useEffect(() => { if (tiffError)    setStatus(`⚠ Error al enviar bandas: ${tiffError}`);    }, [tiffError]);
-  useEffect(() => { if (processError) setStatus(`⚠ Error al procesar: ${processError}`);       }, [processError]);
-  useEffect(() => { if (saveError)    setStatus(`⚠ Error al guardar máscara: ${saveError}`);   }, [saveError]);
+  useEffect(() => { if (tiffError)     setStatus(`⚠ Error al enviar bandas: ${tiffError}`);         }, [tiffError]);
+  useEffect(() => { if (processError)  setStatus(`⚠ Error al procesar: ${processError}`);            }, [processError]);
+  useEffect(() => { if (saveError)     setStatus(`⚠ Error al guardar máscara: ${saveError}`);        }, [saveError]);
+  useEffect(() => { if (downloadError) setStatus(`⚠ Error al descargar sesión: ${downloadError}`);   }, [downloadError]);
 
   /* ── Validate file band keyword ── */
   const validateFile = useCallback((key, file) => {
@@ -263,12 +274,21 @@ export default function RawMaskEditor() {
       )
     );
 
-    const result = await processClusters(ndviClasificado, selectedList, d.ndvi);
+    // Nombre base del archivo NIR (antes del primer '_') para Redis
+    const imgName = (() => {
+      const raw = fileNames?.nir || fileName;
+      const n   = raw.replace(/\.(tif|tiff)$/i, "");
+      const i   = n.indexOf("_");
+      return i !== -1 ? n.slice(0, i) : n;
+    })();
+
+    const result = await processClusters(ndviClasificado, selectedList, d.ndvi, sessionId, imgName);
     if (result) {
       const { ndvi_masked, stats_ndvi } = result;
       dataRef.current = { ...dataRef.current, ndvi_masked };
       switchView("ndvi_masked");
       setStats(stats_ndvi);
+      setSessionSavedCount(c => c + 1);
       setStatus(`✓ Procesado — clusters: ${selectedList.map(c => c + 1).join(", ")}`);
     } else {
       setStatus("⚠ Error al procesar clusters");
@@ -290,10 +310,10 @@ export default function RawMaskEditor() {
     : {
         label: processing ? "Procesando…" : "Procesar",
         onClick: handleProcess,
-        disabled: selectedClusters.size === 0 || processing,
+        disabled: selectedClusters.size === 0 || processing || stats !== null,
         variant: "yellow",
         icon: processing
-          ? <div className="w-4 h-4 rounded-full border-2 border-yellow-300 border-t-transparent animate-spin" />
+          ? <Spinner size="sm" color="text-yellow-300" />
           : <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><polyline points="20 6 9 17 4 12"/></svg>,
       };
 
@@ -305,10 +325,10 @@ export default function RawMaskEditor() {
 
   /* ── Render ── */
   return (
-    <div className="flex flex-col w-full min-h-screen bg-amber-50">
+    <div id="tool" className="flex flex-col w-full min-h-screen bg-amber-50">
 
       {/* Toolbar */}
-      <div className="w-full bg-gradient-to-r from-green-900 to-stone-800 border-b-4 border-yellow-600 px-6 py-3 flex items-center gap-3">
+      <div className="w-full bg-gradient-to-r from-green-950 to-stone-900 border-b border-stone-700 px-6 py-3 flex items-center gap-3">
         <Btn onClick={mainBtn.onClick} disabled={mainBtn.disabled} variant={mainBtn.variant}>
           {mainBtn.icon}{mainBtn.label}
         </Btn>
@@ -319,6 +339,13 @@ export default function RawMaskEditor() {
             <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
           </svg>
           {saving ? "Guardando…" : "Guardar Máscara"}
+        </Btn>
+        <Btn onClick={() => downloadSession(sessionId)} disabled={downloading || sessionSavedCount === 0} variant="blue">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          {downloading ? "Descargando…" : "Descargar Sesión"}
         </Btn>
         <div className="ml-auto">
           <Btn onClick={handleReset} disabled={!ready && !fileName} variant="ghost">
@@ -346,8 +373,8 @@ export default function RawMaskEditor() {
 
           {loading && (
             <div className="flex-1 flex flex-col items-center justify-center gap-4 min-h-96">
-              <div className="w-9 h-9 rounded-full border-4 border-stone-300 border-t-green-600 animate-spin" />
-              <p className="font-sans text-xs uppercase tracking-widest text-stone-400">{status}</p>
+              <Spinner size="md" />
+              <p className="animate-text-pulse font-sans text-xs uppercase tracking-widest text-stone-500">{status}</p>
             </div>
           )}
 
@@ -356,11 +383,20 @@ export default function RawMaskEditor() {
               {viewLabel} · click para activar cluster
             </p>
             <div
-              className="relative inline-block border-2 border-yellow-600 shadow-[5px_5px_0_#4a3f28] overflow-hidden cursor-crosshair"
+              className="relative inline-block border border-stone-600/60 shadow-[0_4px_24px_rgba(0,0,0,0.35)] overflow-hidden cursor-crosshair"
               style={{ width: dims.dw, height: dims.dh, maxWidth: "100%" }}
               onClick={handleClick}
               onMouseMove={handleCanvasHover}
               onMouseLeave={() => setHoverInfo(null)}>
+              
+              {/* Overlay de procesamiento sobre el canvas */}
+              {processing && (
+                <div className="absolute inset-0 z-40 bg-stone-950/40 backdrop-blur-[3px] flex flex-col items-center justify-center gap-4">
+                  <Spinner size="md" />
+                  <span className="animate-text-pulse font-mono text-xs uppercase tracking-widest text-stone-200">Calculando NDVI...</span>
+                </div>
+              )}
+
               <span className="absolute top-1.5 left-2 z-10 font-sans text-[9px] tracking-[.2em] uppercase text-yellow-300/60 pointer-events-none select-none">
                 {RAW_W}×{RAW_H}
               </span>
@@ -373,10 +409,11 @@ export default function RawMaskEditor() {
                   left: Math.max(0, Math.min(dims.dw - 80, hoverInfo.x + 12)),
                   top:  Math.max(0, Math.min(dims.dh - 40, hoverInfo.y + 12)),
                   zIndex: 30, pointerEvents: "none",
-                  background: "rgba(255,255,255,0.97)",
-                  border: "1.5px solid #eab308", borderRadius: 6,
+                  background: hoverInfo.ndvi === 'NA' ? "rgba(40,40,40,0.92)" : "rgba(255,255,255,0.97)",
+                  border: hoverInfo.ndvi === 'NA' ? "1.5px solid #57534e" : "1.5px solid #eab308",
+                  borderRadius: 6,
                   padding: "4px 10px", fontFamily: "monospace",
-                  fontSize: 13, color: "#78350f",
+                  fontSize: 13, color: hoverInfo.ndvi === 'NA' ? "#a8a29e" : "#78350f",
                   boxShadow: "2px 2px 8px #0002",
                 }}>
                   <div>NDVI: <b>{hoverInfo.ndvi}</b></div>
@@ -384,6 +421,19 @@ export default function RawMaskEditor() {
                 </div>
               )}
             </div>
+
+            {/* Banner informativo cuando se muestra la vista masked */}
+            {view === "ndvi_masked" && stats && (
+              <div className="mt-2 flex items-start gap-2 px-3 py-2 bg-stone-100 border border-stone-300 rounded text-stone-600 text-xs leading-relaxed max-w-xl">
+                <svg className="w-4 h-4 mt-0.5 shrink-0 text-stone-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <span>
+                  <b className="text-stone-700">Las áreas oscuras no se consideran en el cálculo.</b>{" "}
+                  Solo los clusters seleccionados con NDVI ≥ {0.55} participan en las estadísticas.
+                </span>
+              </div>
+            )}
           </div>
         </div>
 

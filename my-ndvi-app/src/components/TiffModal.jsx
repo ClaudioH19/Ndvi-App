@@ -23,10 +23,10 @@ export default function TiffModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[3px]"
       onClick={onClose}>
       <div
-        className="flex flex-col gap-5 bg-stone-900 border-2 border-yellow-600 shadow-[8px_8px_0_#1a130a] p-5 w-[680px] max-w-[95vw]"
+        className="flex flex-col gap-5 bg-stone-900 border border-stone-700 shadow-[0_8px_40px_rgba(0,0,0,0.55)] p-5 w-[680px] max-w-[95vw]"
         onClick={(e) => e.stopPropagation()}
         onDragOver={(e) => { e.preventDefault(); setModalDragOver(true); }}
         onDragLeave={() => setModalDragOver(false)}
@@ -72,7 +72,7 @@ export default function TiffModal({
           </p>
         </div>
 
-        {/* Coherencia de nombre base */}
+        {/* Coherencia de nombre base + advertencias de canal — banners apilados */}
         {mismatch && (
           <div className="flex items-center gap-2 px-3 py-2 bg-red-900/30 border border-red-500/50">
             <svg className="w-4 h-4 text-red-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -83,13 +83,23 @@ export default function TiffModal({
             </p>
           </div>
         )}
+        {SLOTS.filter(({ key }) => tiffWarnings[key] && tiffFiles[key]).map(({ key, label }) => (
+          <div key={key} className="flex items-center gap-2 px-3 py-2 bg-orange-900/30 border border-orange-500/50">
+            <svg className="w-4 h-4 text-orange-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+            </svg>
+            <p className="font-sans text-[10px] text-orange-300">
+              ⚠ Canal <span className="font-bold text-orange-200">{label}</span> — el nombre del archivo no contiene &quot;{label}&quot;. ¿Es la banda correcta?
+            </p>
+          </div>
+        ))}
 
         {/* Band slots */}
         <div className="flex gap-3">
           {SLOTS.map(({ key, label, accent, note }) => (
             <div
               key={key}
-              className="flex-1 flex flex-col items-center justify-center gap-2 border-2 border-dashed py-6 px-3 cursor-pointer transition-all"
+              className="flex-1 flex flex-col items-center justify-center gap-2 border border-dashed py-6 px-3 cursor-pointer transition-all"
               style={{
                 borderColor: tiffWarnings[key] ? "#f87171" : tiffFiles[key] ? accent : "#44403c",
                 background:  tiffWarnings[key] ? "#7f1d1d22" : tiffFiles[key] ? `${accent}12` : "transparent",
@@ -123,11 +133,7 @@ export default function TiffModal({
               <p className="font-sans text-[10px] text-center leading-tight break-all" style={{ color: tiffFiles[key] ? "#d6d3d1" : "#78716c" }}>
                 {tiffFiles[key] ? tiffFiles[key].name : "Click para seleccionar"}
               </p>
-              {tiffWarnings[key] && (
-                <p className="font-sans text-[9px] text-red-400 text-center leading-tight">
-                  ⚠ El nombre no contiene "{label}" — ¿seguro que es la banda correcta?
-                </p>
-              )}
+
             </div>
           ))}
         </div>
@@ -142,7 +148,7 @@ export default function TiffModal({
           <button
             disabled={!tiffFiles.nir || !tiffFiles.red || !tiffFiles.green}
             onClick={() => onSubmit(tiffFiles.nir, tiffFiles.red, tiffFiles.green)}
-            className="flex items-center gap-2 px-5 py-2 border-2 font-sans font-semibold text-xs uppercase tracking-widest transition-all border-yellow-500/70 bg-yellow-600/30 hover:bg-yellow-500/45 text-yellow-200 disabled:opacity-30 disabled:cursor-not-allowed">
+            className="flex items-center gap-2 px-5 py-2 border font-sans font-semibold text-xs uppercase tracking-widest transition-all border-stone-500 bg-stone-700/60 hover:bg-stone-600/60 hover:border-stone-400 text-stone-200 disabled:opacity-30 disabled:cursor-not-allowed">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
             </svg>

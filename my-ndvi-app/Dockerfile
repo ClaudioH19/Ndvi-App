@@ -4,6 +4,7 @@ COPY package*.json ./
 RUN npm install
 RUN npm install -D tailwindcss @tailwindcss/postcss postcss autoprefixer
 COPY . .
+RUN sh src/images/rebuild_video.sh
 RUN npm run build
 
 FROM nginx:alpine

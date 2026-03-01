@@ -14,7 +14,13 @@ export default function useProcessClusters() {
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState(null);
 
-  const processClusters = useCallback(async (ndviClasificado, selectedList, ndviCompleto) => {
+  const processClusters = useCallback(async (
+    ndviClasificado,
+    selectedList,
+    ndviCompleto,
+    sessionId  = null,
+    imageName  = null,
+  ) => {
     setLoading(true);
     setError(null);
     try {
@@ -33,6 +39,10 @@ export default function useProcessClusters() {
       );
 
       fd.append("selected_clusters", JSON.stringify(selectedList));
+
+      // Datos de sesión (opcionales — si están presentes el backend guarda en Redis)
+      if (sessionId) fd.append("session_id", sessionId);
+      if (imageName) fd.append("image_name", imageName);
 
       const r = await fetch("/api/v1/ndvi/process", {
         method: "POST",

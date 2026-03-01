@@ -4,6 +4,7 @@ export default function Btn({ onClick, disabled, variant = "white", children }) 
     green:  "border-green-400/50 bg-green-700/25 hover:bg-green-600/40 text-green-200",
     yellow: "border-yellow-500/70 bg-yellow-600/30 hover:bg-yellow-500/45 text-yellow-200",
     ghost:  "border-white/10 bg-transparent hover:bg-white/10 text-amber-200/50 hover:text-amber-100",
+    blue:   "border-blue-400/50 bg-blue-700/25 hover:bg-blue-600/40 text-blue-200",
   }[variant];
   return (
     <button

@@ -11,7 +11,7 @@ export default function StatsCard({ stats }) {
   ];
 
   return (
-    <div className="w-52 shrink-0 self-start mt-10 mx-1 flex flex-col gap-0 bg-white/70 border border-stone-200 border-l-4 border-l-emerald-500 shadow-sm">
+    <div className="w-52 shrink-0 self-start mt-10 mx-1 mr-10 flex flex-col gap-0 bg-white/70 border border-stone-200 border-l-4 border-l-emerald-500 shadow-sm">
 
       {/* Header */}
       <div className="px-3 py-1.5 bg-emerald-600/10 border-b border-stone-200">

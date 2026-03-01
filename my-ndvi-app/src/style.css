@@ -1,1 +1,31 @@
 @import "tailwindcss";
+
+/* Cámara: 4 saltos por ciclo, cada salto gira +90° */
+@keyframes cameraJump {
+  0%    { transform: translateY(0px)   rotate(0deg);   }
+  12.5% { transform: translateY(-18px) rotate(45deg);  }
+  25%   { transform: translateY(0px)   rotate(90deg);  }
+  37.5% { transform: translateY(-18px) rotate(135deg); }
+  50%   { transform: translateY(0px)   rotate(180deg); }
+  62.5% { transform: translateY(-18px) rotate(225deg); }
+  75%   { transform: translateY(0px)   rotate(270deg); }
+  87.5% { transform: translateY(-18px) rotate(315deg); }
+  100%  { transform: translateY(0px)   rotate(360deg); }
+}
+
+.animate-camera {
+  animation: cameraJump 2s ease-in-out infinite;
+  display: inline-block;
+  transform-origin: center center;
+}
+
+/* Texto que acompaña al spinner: pequeño zoom in/out sincronizado */
+@keyframes textPulse {
+  0%, 100% { transform: scale(1);    opacity: 0.7; }
+  50%       { transform: scale(1.07); opacity: 1;   }
+}
+
+.animate-text-pulse {
+  animation: textPulse 1s ease-in-out infinite;
+  display: inline-block;
+}

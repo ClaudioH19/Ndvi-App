@@ -1,7 +1,7 @@
 export default function StatusBar({ status, ready, loading, fileName }) {
   const isError = status.startsWith("⚠");
   return (
-    <div className="w-full bg-gradient-to-r from-stone-800 to-stone-900 border-t-2 border-yellow-600 px-6 py-1.5 flex items-center gap-3">
+    <div className="w-full bg-stone-900 border-t border-stone-700/80 px-6 py-1.5 flex items-center gap-3">
       <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
         isError  ? "bg-red-400 animate-pulse" :
         ready    ? "bg-green-400" :

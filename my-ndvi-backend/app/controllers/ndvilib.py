@@ -243,4 +243,11 @@ async def process_clusters(image_data_classified, nvdi_completo):
     ndvi_masked_clean = replace_nan_inf(ndvi_masked)
     print("[process_clusters] done, returning result")
 
-    return {"ndvi_masked": ndvi_masked_clean.tolist(), "stats_ndvi": stats_ndvi}
+    # _ndvi_masked_arr se incluye internamente para que el router pueda
+    # generar el TIFF de máscara sin reconstruir el array desde la lista.
+    # El router debe hacer pop() de esta clave antes de serializar la respuesta.
+    return {
+        "ndvi_masked":     ndvi_masked_clean.tolist(),
+        "_ndvi_masked_arr": ndvi_masked_clean,
+        "stats_ndvi":      stats_ndvi,
+    }
