@@ -246,6 +246,16 @@ docker-compose up --build
 
 ---
 
+## Seguridad
+
+### Redis
+
+El contenedor Redis **no expone ningún puerto al host** (no hay `ports: - "6379:6379"` en el compose). Solo es accesible dentro de la red Docker interna, por lo que no es alcanzable desde internet.
+
+> **Advertencia**: si en algún momento se añade `ports: - "6379:6379"` al compose y se despliega en un servidor público, Redis queda expuesto sin autenticación. Docker bypasea `iptables`/`ufw`, por lo que las reglas de firewall del sistema operativo **no protegen** los puertos mapeados por Docker. La única protección efectiva es no mapear el puerto.
+
+---
+
 ## Flujo de uso típico
 
 1. Abrir `http://localhost` en el navegador.
