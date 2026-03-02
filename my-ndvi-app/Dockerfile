@@ -3,6 +3,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 RUN npm install -D tailwindcss @tailwindcss/postcss postcss autoprefixer
+RUN chmod -R 755 node_modules/.bin
 COPY . .
 RUN sh src/images/rebuild_video.sh
 RUN npm run build

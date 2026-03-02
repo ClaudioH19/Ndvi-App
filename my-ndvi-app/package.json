@@ -4,8 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npx vite build",
     "serve": "vite preview"
+    
   },
   "dependencies": {
     "@visx/visx": "^3.12.0",
