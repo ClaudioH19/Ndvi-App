@@ -248,6 +248,46 @@ docker-compose up --build
 
 ## Seguridad
 
+## CI/CD automatico (GitHub Actions)
+
+Se agrego el workflow [.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml) con este comportamiento:
+
+1. En cada `push` (cada commit subido) se reconstruyen y publican las imagenes Docker de frontend y backend.
+2. Se publican dos tags por imagen:
+  - `latest`
+  - `sha-<commit_sha>`
+3. Si el `push` es a `main`, se conecta por SSH a tu servidor, hace `git pull` del repo y actualiza la app con Docker Compose de produccion.
+
+### Secrets requeridos en GitHub
+
+Configuralos en: `Settings > Secrets and variables > Actions` del repositorio.
+
+- `DOCKERHUB_USERNAME`: usuario de Docker Hub.
+- `DOCKERHUB_TOKEN`: access token de Docker Hub (no password).
+- `SERVER_HOST`: IP o dominio del servidor.
+- `SERVER_USER`: usuario SSH del servidor.
+- `SERVER_SSH_KEY`: llave privada SSH en formato PEM/OpenSSH.
+- `SERVER_APP_DIR`: ruta absoluta en servidor donde esta clonado el repo (ej. `/opt/NDVI`).
+
+### Flujo de despliegue en `main`
+
+El workflow ejecuta en servidor:
+
+```bash
+cd "$SERVER_APP_DIR"
+git fetch origin main
+git pull --ff-only origin main
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d --remove-orphans
+docker image prune -f
+```
+
+Con esto, cada push a `main` deja actualizados:
+
+- el codigo del repo en servidor,
+- las imagenes publicadas en Docker Hub,
+- y los contenedores en ejecucion.
+
 ### Redis
 
 El contenedor Redis **no expone ningún puerto al host** (no hay `ports: - "6379:6379"` en el compose). Solo es accesible dentro de la red Docker interna, por lo que no es alcanzable desde internet.

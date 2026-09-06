@@ -1,0 +1,30 @@
+services:
+  frontend:
+    build: ./my-ndvi-app
+    image: claudio19/ndvi-frontend:dev
+    ports:
+      - "8080:80"
+    volumes:
+      - ./my-ndvi-app/nginx.dev.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+
+  backend:
+    build: ./my-ndvi-backend
+    image: claudio19/ndvi-backend:dev
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+volumes:
+  redis_data:
